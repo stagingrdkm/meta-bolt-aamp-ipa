@@ -1,0 +1,15 @@
+{
+  "id": "com.rdkcentral.aamp.ipa",
+  "version": "0.0.1",
+  "versionName": "develop",
+  "name": "aamp-ipa",
+  "packageType": "runtime",
+  "entryPoint": "/usr/bin/tbd",
+  "dependencies": {
+    "com.rdkcentral.base": "0.2.0"
+  },
+  "permissions": [
+  ],
+  "configuration": {
+  }
+}

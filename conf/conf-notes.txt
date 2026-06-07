@@ -1,0 +1,8 @@
+Example targets:
+  bitbake aamp-ipa-bolt-image        # no multi config 
+
+  bitbake mc:arm:aamp-ipa-bolt-image  \
+  bitbake mc:arm64:aamp-ipa-bolt-image  \ 
+  bitbake mc:amd64:aamp-ipa-bolt-image  # requires multi config
+
+

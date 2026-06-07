@@ -1,0 +1,7 @@
+{
+  "config": "com.rdkcentral.aamp.ipa.json",
+  "bitbake": {
+    "image": "aamp-ipa-bolt-image" 
+  }
+}
+
