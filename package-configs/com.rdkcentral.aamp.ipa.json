@@ -4,7 +4,7 @@
   "versionName": "develop",
   "name": "aamp-ipa",
   "packageType": "runtime",
-  "entryPoint": "/usr/bin/tbd",
+  "entryPoint": "/usr/bin/aamp-cli",
   "dependencies": {
     "com.rdkcentral.base": "0.2.0"
   },
