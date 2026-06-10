@@ -39,6 +39,7 @@ NO_RECOMMENDATIONS = "1"
 SRC_URI = "git://github.com/rdkcentral/aamp.git;protocol=https;branch=develop;name=aamp"
 #adding text based aamp config file read by aamp at launchtime to be installed in /opt/aamp.cfg
 SRC_URI += "file://aamp.cfg"
+SRC_URI += "file://aamp-cli-bolt.sh"
 
 S = "${WORKDIR}/git"
 
@@ -67,6 +68,7 @@ FILES:${PN} +="${libdir}/gstreamer-1.0/lib*.so"
 FILES:${PN}-dbg +="${libdir}/gstreamer-1.0/.debug/*"
 #added for dev purpose
 FILES:${PN} += "/opt /opt/aamp.cfg"
+FILES:${PN} += "aamp-cli-bolt.sh"
 #
 INSANE_SKIP:${PN} = "dev-so"
 
@@ -92,7 +94,7 @@ INSANE_SKIP:${PN} = "dev-so"
 do_install:append() {
     echo "Installing aamp-cli..."
     install -m755 ${B}/aamp-cli ${D}${libdir}
-
+    install -m 755 ${WORKDIR}/aamp-cli-bolt.sh ${D}${bindir}
     # remove the static library if it is installed, 
     # CMakelist in aamp code installing static lib below line should avoid build error 
     rm -f ${D}${libdir}/libtsb.a
