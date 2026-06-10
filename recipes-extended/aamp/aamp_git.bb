@@ -37,6 +37,8 @@ EXTRA_OECMAKE += " -DCMAKE_EXTERNAL_PLAYER_INTERFACE_DEPENDENCIES=0"
 NO_RECOMMENDATIONS = "1"
 
 SRC_URI = "git://github.com/rdkcentral/aamp.git;protocol=https;branch=develop;name=aamp"
+#adding text based aamp config file read by aamp at launchtime to be installed in /opt/aamp.cfg
+SRC_URI += "file://aamp.cfg"
 
 S = "${WORKDIR}/git"
 
@@ -63,7 +65,9 @@ FILES:${PN} += "${libdir}/aamp-cli"
 FILES:${PN} += "${libdir}/aamp/lib*.so"
 FILES:${PN} +="${libdir}/gstreamer-1.0/lib*.so"
 FILES:${PN}-dbg +="${libdir}/gstreamer-1.0/.debug/*"
-
+#added for dev purpose
+FILES:${PN} += "/opt /opt/aamp.cfg"
+#
 INSANE_SKIP:${PN} = "dev-so"
 
 # original: required for specific products but for now distro is available only for UK 
@@ -92,6 +96,9 @@ do_install:append() {
     # remove the static library if it is installed, 
     # CMakelist in aamp code installing static lib below line should avoid build error 
     rm -f ${D}${libdir}/libtsb.a
+    # adding in this ipa develop stage the aamp config file in container rootfs, according to documenation needs to be in /opt/aamp.cfg
+    install -d ${D}/opt
+    install -m 0644 ${WORKDIR}/aamp.cfg ${D}/opt/aamp.cfg
 }
 
 # removing the whole artifact generation piece. Don't need it for our use case

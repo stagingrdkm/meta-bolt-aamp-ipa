@@ -1,0 +1,7 @@
+{
+  "config": "com.rdkcentral.aamp-cli.json",
+  "bitbake": {
+    "image": "aamp-cli-bolt-image" 
+  }
+}
+
