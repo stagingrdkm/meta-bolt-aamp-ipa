@@ -1,0 +1,18 @@
+Index: git/middleware/InterfacePlayerRDK.cpp
+===================================================================
+--- git.orig/middleware/InterfacePlayerRDK.cpp
++++ git/middleware/InterfacePlayerRDK.cpp
+@@ -445,9 +445,12 @@ void InterfacePlayerRDK::ConfigurePipeli
+ 				 newClosedCaptionsControl &&
+ 				 !interfacePlayerPriv->gstPrivateContext->usingClosedCaptionsControl)
+ 		{
++			MW_LOG_ERR("Skipping closed captions control stream");
++/*
+ 			TearDownStream(eGST_MEDIATYPE_SUBTITLE);
+ 			interfacePlayerPriv->gstPrivateContext->usingClosedCaptionsControl = true;
+-			SetupClosedCaptionControlStream();
++*/			SetupClosedCaptionControlStream();
++
+ 		}
+ 	}
+ 	if ((interfacePlayerPriv->gstPrivateContext->usingRialtoSink) && (m_gstConfigParam->media != eGST_MEDIAFORMAT_PROGRESSIVE))

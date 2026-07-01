@@ -20,7 +20,7 @@ DEPENDS += "curl libdash libxml2 cjson readline gstreamer1.0 gstreamer1.0-plugin
 
 # original: RDEPENDS:${PN} += "devicesettings ${@bb.utils.contains('DISTRO_FEATURES', 'build_external_player_interface', 'player-interface', '', d)} ${@bb.utils.contains('DISTRO_FEATURES', 'subtec', 'packagegroup-subttxrend-app', '', d)}"
 # replaced with this line
-# RDEPENDS:${PN} += ""
+RDEPENDS:${PN} += "gstreamer1.0-plugins-base-playback gstreamer1.0-plugins-base-app gstreamer1.0-plugins-good-isomp4 "
 
 inherit pkgconfig
 inherit cmake
@@ -40,7 +40,7 @@ SRC_URI = "git://github.com/rdkcentral/aamp.git;protocol=https;branch=develop;na
 #adding text based aamp config file read by aamp at launchtime to be installed in /opt/aamp.cfg
 SRC_URI += "file://aamp.cfg"
 SRC_URI += "file://aamp-cli-bolt.sh"
-
+SRC_URI += "file://0001-disable-closedcaptions.patch"
 S = "${WORKDIR}/git"
 
 # original: require aamp-common.inc
@@ -105,4 +105,4 @@ do_install:append() {
 
 # removing the whole artifact generation piece. Don't need it for our use case
 # removed it from this file
-#
+RECOMMENDS:${PN} += "ca-certificates shared-mime-info"

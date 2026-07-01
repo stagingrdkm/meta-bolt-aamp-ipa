@@ -3,8 +3,8 @@
   "version": "0.0.1",
   "versionName": "develop",
   "name": "aamp-ipa",
-  "packageType": "runtime",
-  "entryPoint": "/usr/bin/aamp-cli-bolt.sh",
+  "packageType": "application",
+  "entryPoint": "/usr/bin/IPALauncher",
   "dependencies": {
     "com.rdkcentral.base": "0.2.0"
   },
