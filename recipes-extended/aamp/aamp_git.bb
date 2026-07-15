@@ -4,11 +4,11 @@ SECTION = "console/utils"
 LICENSE = "Apache-2.0"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=97dd37dbf35103376811825b038fc32b"
 
-PV = "3.3.0"
+PV = "3.6.0"
 PR = "r0"
 
 SRCREV_FORMAT = "aamp"
-SRCREV_aamp ?= "32ffcb2f9ba33838d243954abca53a9195cc2762"
+SRCREV_aamp ?= "f6208c3886f0b34ecedb14957917490c804d3ef7"
 
 # Support to build from a different branch by overriding both AAMP_BRANCH and SRCREV_aamp to specific branch and revision.
 AAMP_BRANCH ?= "develop"
@@ -16,12 +16,38 @@ CMF_GITHUB_BRANCH = "branch=${AAMP_BRANCH}"
 
 # original: DEPENDS += "curl libdash libxml2 cjson readline ${@bb.utils.contains('DISTRO_FEATURES', 'build_external_player_interface', 'player-interface', '', d)} ${@bb.utils.contains('DISTRO_FEATURES', 'webkitbrowser-plugin', '${WPEWEBKIT}', '', d)} ${@bb.utils.contains('DISTRO_FEATURES', 'subtec', 'closedcaption-hal-headers virtual/vendor-dvb virtual/vendor-closedcaption-hal', '', d)} ${@bb.utils.contains('DISTRO_FEATURES', 'enable_rialto', 'dobby', '', d)}"
 # replaced with this line, note I had to add gstreamer1.0 gstreamer1.0-plugins-base
-DEPENDS += "curl libdash libxml2 cjson readline gstreamer1.0 gstreamer1.0-plugins-base"
+DEPENDS += "curl libdash libxml2 cjson readline gstreamer1.0"
 
 # original: RDEPENDS:${PN} += "devicesettings ${@bb.utils.contains('DISTRO_FEATURES', 'build_external_player_interface', 'player-interface', '', d)} ${@bb.utils.contains('DISTRO_FEATURES', 'subtec', 'packagegroup-subttxrend-app', '', d)}"
 # replaced with this line
-RDEPENDS:${PN} += "gstreamer1.0-plugins-base-playback gstreamer1.0-plugins-base-app gstreamer1.0-plugins-good-isomp4 "
 
+DEPENDS += "rialto-ocdm-link"
+RDEPENDS:${PN} += "rialto-gstreamer libsoup-2.4 \
+    gstreamer1.0-plugins-good-isomp4 \
+    gstreamer1.0-plugins-base-app \
+    gstreamer1.0-plugins-base-playback \
+    gstreamer1.0-plugins-good-soup \
+    gstreamer1.0-plugins-good-matroska \
+    gstreamer1.0-plugins-base-audioconvert \
+    gstreamer1.0-plugins-base-audioresample \
+    gstreamer1.0-plugins-base-gio \
+    gstreamer1.0-plugins-base-videoconvert \
+    gstreamer1.0-plugins-base-videoscale \
+    gstreamer1.0-plugins-base-volume \
+    gstreamer1.0-plugins-base-typefindfunctions \
+    gstreamer1.0-plugins-good-audiofx \
+    gstreamer1.0-plugins-good-audioparsers \
+    gstreamer1.0-plugins-good-autodetect \
+    gstreamer1.0-plugins-good-avi \
+    gstreamer1.0-plugins-good-deinterlace \
+    gstreamer1.0-plugins-good-interleave \
+    gstreamer1.0-plugins-bad-dash \
+    gstreamer1.0-plugins-bad-mpegtsdemux \
+    gstreamer1.0-plugins-bad-smoothstreaming \
+    gstreamer1.0-plugins-bad-videoparsersbad \
+"
+
+#gstreamer1.0-plugins-bad-opusparse 
 inherit pkgconfig
 inherit cmake
 # original: require ${@bb.utils.contains('DISTRO_FEATURES', 'build_external_player_interface', '', 'aamp-middleware.inc', d)}
@@ -39,7 +65,7 @@ NO_RECOMMENDATIONS = "1"
 SRC_URI = "git://github.com/rdkcentral/aamp.git;protocol=https;branch=develop;name=aamp"
 #adding text based aamp config file read by aamp at launchtime to be installed in /opt/aamp.cfg
 SRC_URI += "file://aamp.cfg"
-SRC_URI += "file://aamp-cli-bolt.sh"
+#SRC_URI += "file://aamp-cli-bolt.sh"
 SRC_URI += "file://0001-disable-closedcaptions.patch"
 S = "${WORKDIR}/git"
 
@@ -57,7 +83,7 @@ EXTRA_OECMAKE += " -DCMAKE_INBUILT_AAMP_DEPENDENCIES=1"
 # original: EXTRA_OECMAKE += " -DCMAKE_WPEWEBKIT_WATERMARK_JSBINDINGS=1 "
 # replace with
 EXTRA_OECMAKE += " -DCMAKE_WPEWEBKIT_WATERMARK_JSBINDINGS=0 "
-
+#EXTRA_OECMAKE += " -DCMAKE_BUILD_RIALTO_POC=1"
 #Ethan log is implemented by Dobby hence enabling it.
 PACKAGES = "${PN} ${PN}-dev ${PN}-dbg"
 
@@ -68,7 +94,7 @@ FILES:${PN} +="${libdir}/gstreamer-1.0/lib*.so"
 FILES:${PN}-dbg +="${libdir}/gstreamer-1.0/.debug/*"
 #added for dev purpose
 FILES:${PN} += "/opt /opt/aamp.cfg"
-FILES:${PN} += "aamp-cli-bolt.sh"
+#FILES:${PN} += "aamp-cli-bolt.sh"
 #
 INSANE_SKIP:${PN} = "dev-so"
 
@@ -94,7 +120,7 @@ INSANE_SKIP:${PN} = "dev-so"
 do_install:append() {
     echo "Installing aamp-cli..."
     install -m755 ${B}/aamp-cli ${D}${libdir}
-    install -m 755 ${WORKDIR}/aamp-cli-bolt.sh ${D}${bindir}
+#    install -m 755 ${WORKDIR}/aamp-cli-bolt.sh ${D}${bindir}
     # remove the static library if it is installed, 
     # CMakelist in aamp code installing static lib below line should avoid build error 
     rm -f ${D}${libdir}/libtsb.a
