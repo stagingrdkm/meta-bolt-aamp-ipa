@@ -1,0 +1,2014 @@
+diff --git a/IntegratedPlayer/source/Application.cpp b/IntegratedPlayer/source/Application.cpp
+index 6bd6734..57a0afb 100644
+--- a/IntegratedPlayer/source/Application.cpp
++++ b/IntegratedPlayer/source/Application.cpp
+@@ -20,16 +20,17 @@
+ #include "Application.h"
+ #include <cstdlib> //For getEnv
+ #include <iostream>
++#include "Logger.h"
+ 
+ namespace ipalauncher
+ {
+ 
+     int Application::run()
+     {
+-        std::cout << "Starting " << title() << std::endl;
++        LOG(LogLevel::INFO, "Starting ", title());
+         if (m_ipawsConnector->initialize() != 0)
+         {
+-            std::cerr << "Failed to initialize IPAWSConnector" << std::endl;
++            LOG(LogLevel::ERROR, "Failed to initialize IPAWSConnector");
+             return -1;
+         }
+         m_ipawsConnector->start();
+@@ -40,9 +41,7 @@ namespace ipalauncher
+ 
+     Application::Application()
+     {
+-        char *portEnv = std::getenv("IPAWS_PORT");                 // Get the port from environment variable if needed
+-        int port = portEnv ? std::atoi(portEnv) : 10101;           // Use the environment variable if available, otherwise default to 10101
+-        m_ipawsConnector = std::make_unique<IPAWSConnector>(port); // Initialize the IPAWSConnector with the desired port
++        m_ipawsConnector = std::make_unique<IPAWSConnector>(); // Initialize the IPAWSConnector with the default constructor
+         // Constructor implementation
+     }
+     Application::~Application()
+diff --git a/IntegratedPlayer/source/CMakeLists.txt b/IntegratedPlayer/source/CMakeLists.txt
+index 481e0b3..936b7a8 100644
+--- a/IntegratedPlayer/source/CMakeLists.txt
++++ b/IntegratedPlayer/source/CMakeLists.txt
+@@ -21,6 +21,9 @@ find_package(Aamp REQUIRED)
+ find_package(wsrpcserver REQUIRED)
+ find_package( jsoncpp REQUIRED)
+ 
++find_package(FireboltTransport CONFIG REQUIRED)
++find_package(FireboltClient CONFIG REQUIRED)
++
+ pkg_check_modules(GLIB REQUIRED glib-2.0)
+ pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0>=1.18.0)
+ pkg_check_modules(GSTREAMERBASE REQUIRED gstreamer-app-1.0)
+@@ -34,6 +37,7 @@ add_executable(IPALauncher
+     main.cpp
+     Player.cpp
+     IPAWSConnector.cpp
++    LifecycleConnector.cpp
+ )
+ message(STATUS "wsrpcserver found ?: ${WSRPCSERVER_FOUND}")
+ message (STATUS "wsrpcserver include dirs: ${WSRPCSERVER_INCLUDE_DIRS}")
+@@ -56,6 +60,8 @@ target_link_libraries(IPALauncher
+         WSRPCSERVER::WSRPCSERVER
+         JsonCpp::JsonCpp
+         uuid
++        FireboltTransport::FireboltTransport
++        FireboltClient::FireboltClient
+ )
+ install(TARGETS IPALauncher
+     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+diff --git a/IntegratedPlayer/source/IPAUtils.h b/IntegratedPlayer/source/IPAUtils.h
+index 33e1ac7..402d2cd 100644
+--- a/IntegratedPlayer/source/IPAUtils.h
++++ b/IntegratedPlayer/source/IPAUtils.h
+@@ -24,6 +24,7 @@
+ #include <json/json.h>
+ #include <ctime>
+ #include <uuid/uuid.h>
++#include "Logger.h"
+ namespace ipalauncher
+ {
+ 
+@@ -32,11 +33,11 @@ namespace ipalauncher
+         if (request.isMember("sessionId") && request["sessionId"].isString())
+         {
+             std::string sessionId = request["sessionId"].asString();
+-            std::cout << "Validating session. Active session ID: " << activeSessionId << ", Request session ID: " << sessionId << std::endl;
++            LOG(LogLevel::INFO, "Validating session. Active session ID: ", activeSessionId, ", Request session ID: ", sessionId);
+             return !activeSessionId.empty() && activeSessionId == sessionId;
+         }
+         else
+-            std::cerr << "Request has no 'sessionId' parameter or not a string. Active session ID: " << activeSessionId << std::endl;
++            LOG(LogLevel::ERROR, "Request has no 'sessionId' parameter or not a string. Active session ID: ", activeSessionId);
+         return false;
+     }
+     inline std::string generateSessionId()
+diff --git a/IntegratedPlayer/source/IPAWSConnector.cpp b/IntegratedPlayer/source/IPAWSConnector.cpp
+index a812620..b9da184 100644
+--- a/IntegratedPlayer/source/IPAWSConnector.cpp
++++ b/IntegratedPlayer/source/IPAWSConnector.cpp
+@@ -21,12 +21,14 @@
+ #include "IPAWSMethods.h"
+ #include <json/json.h>
+ #include <vector>
++#include "Logger.h"
+ 
+ #include <cstdlib> // For setenv
+ #include <iostream>
+ #include "IPAUtils.h"
+ using namespace std;
+ 
++#define DEFAULT_IPAWS_PORT 10101
+ // The general response format for the methods is as follows:
+ // {
+ //      "status" : true or false,
+@@ -37,19 +39,28 @@ namespace ipalauncher
+ {
+     int IPAWSConnector::initialize()
+     {
++
++        const char *portEnv = std::getenv("IPAWS_PORT"); // Get the port from environment variable if needed
++
++        int port = portEnv ? std::atoi(portEnv) : DEFAULT_IPAWS_PORT; // Use the environment variable if available, otherwise default to 10101
++        m_port = static_cast<uint16_t>(port);
++
+         // Create the RPC server instance
+         std::string registerMethodName(IPAWSMethods::IPA_METHOD_REGISTER);
+         std::string unregisterMethodName(IPAWSMethods::IPA_METHOD_UNREGISTER);
+         std::string getListenersMethodName(IPAWSMethods::IPA_METHOD_GET_LISTENERS);
+ 
+         // Set up the RPC server with the specified port and method names
+-
+         WsRpcServerBuilder builder(m_port, true);
+         m_wsRpcServer = std::shared_ptr<IAbstractRpcServer>(builder.enableServerEvents(registerMethodName, unregisterMethodName, getListenersMethodName)
+                                                                 .numThreads(1)
+                                                                 .build());
+ 
++        LOG(LogLevel::INFO, "RPC server initialized on port: ", m_port);
+         registerMethods();
++
++        bool status = connectToFirebolt();
++        LOG(LogLevel::TRACE, "Connection  to Firebolt endpoint status: ", (status ? "Connected" : "Not Connected"));
+         return 0;
+     }
+     void IPAWSConnector::start()
+@@ -57,11 +68,19 @@ namespace ipalauncher
+         if (m_wsRpcServer)
+         {
+             m_wsRpcServer->StartListening();
++            LOG(LogLevel::INFO, "RPC server started listening on port: ", m_port);
++        }
++        if (waitForFireboltConnection(5000)) // Wait for Firebolt connection with a timeout of 5000 ms
++        {
++            LOG(LogLevel::INFO, "Registering for lifecycle events with Firebolt: ");
++            registerForLifecycleEvents();
+         }
+     }
+ 
+     void IPAWSConnector::shutdown()
+     {
++        LOG(LogLevel::INFO, "Shutting down IPAWSConnector...");
++        disconnectFirebolt();
+         if (m_wsRpcServer)
+         {
+             m_wsRpcServer->StopListening();
+@@ -83,207 +102,227 @@ namespace ipalauncher
+     {
+         bool status = bindMethod(IPAWSMethods::IPA_METHOD_OPEN_SESSION, [this](const std::string &request, std::string &response)
+                                  { handleOpenSession(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_OPEN_SESSION << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_OPEN_SESSION, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_SESSION_INFO, [this](const std::string &request, std::string &response)
+                             { handleGetSessionInfo(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_SESSION_INFO << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_SESSION_INFO, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SETUP_SESSION, [this](const std::string &request, std::string &response)
+                             { handleSetupSession(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SETUP_SESSION << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SETUP_SESSION, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_PLAY, [this](const std::string &request, std::string &response)
+                             { handlePlay(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_PLAY << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_PLAY, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_STOP, [this](const std::string &request, std::string &response)
+                             { handleStop(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_STOP << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_STOP, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SEEK, [this](const std::string &request, std::string &response)
+                             { handleSeek(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SEEK << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SEEK, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SEEK_TO_LIVE, [this](const std::string &request, std::string &response)
+                             { handleSeekToLive(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SEEK_TO_LIVE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SEEK_TO_LIVE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_RATE, [this](const std::string &request, std::string &response)
+                             { handleSetRate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_RATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_RATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_PLAYBACK_SPEED, [this](const std::string &request, std::string &response)
+                             { handleSetPlaybackSpeed(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_PLAYBACK_SPEED << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_PLAYBACK_SPEED, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_PAUSE_AT, [this](const std::string &request, std::string &response)
+                             { handlePauseAt(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_PAUSE_AT << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_PAUSE_AT, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_RATE_AND_SEEK, [this](const std::string &request, std::string &response)
+                             { handleSetRateAndSeek(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_RATE_AND_SEEK << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_RATE_AND_SEEK, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_STATE, [this](const std::string &request, std::string &response)
+                             { handleGetState(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_STATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_STATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_PLAYBACK_POSITION, [this](const std::string &request, std::string &response)
+                             { handleGetPlaybackPosition(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_PLAYBACK_POSITION << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_PLAYBACK_POSITION, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_PLAYBACK_DURATION, [this](const std::string &request, std::string &response)
+                             { handleGetPlaybackDuration(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_PLAYBACK_DURATION << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_PLAYBACK_DURATION, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_PLAYBACK_RATE, [this](const std::string &request, std::string &response)
+                             { handleGetPlaybackRate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_PLAYBACK_RATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_PLAYBACK_RATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_CLOSE_SESSION, [this](const std::string &request, std::string &response)
+                             { handleCloseSession(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_CLOSE_SESSION << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_CLOSE_SESSION, " method status: ", (status ? "Success" : "Failure"));
+ 
+         // Playback State
+         status = bindMethod(IPAWSMethods::IPA_METHOD_IS_LIVE, [this](const std::string &request, std::string &response)
+                             { handleIsLive(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_IS_LIVE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_IS_LIVE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         // Video
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_VIDEO_MUTE, [this](const std::string &request, std::string &response)
+                             { handleSetVideoMute(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_VIDEO_MUTE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_VIDEO_MUTE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_VIDEO_MUTE, [this](const std::string &request, std::string &response)
+                             { handleGetVideoMute(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_VIDEO_MUTE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_VIDEO_MUTE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         // Audio
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_AUDIO_VOLUME, [this](const std::string &request, std::string &response)
+                             { handleSetAudioVolume(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_AUDIO_VOLUME << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_AUDIO_VOLUME, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_AUDIO_VOLUME, [this](const std::string &request, std::string &response)
+                             { handleGetAudioVolume(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_AUDIO_VOLUME << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_AUDIO_VOLUME, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_AUDIO_LANGUAGE, [this](const std::string &request, std::string &response)
+                             { handleGetAudioLanguage(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_AUDIO_LANGUAGE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_AUDIO_LANGUAGE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_AVAILABLE_AUDIO_TRACKS, [this](const std::string &request, std::string &response)
+                             { handleGetAvailableAudioTracks(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_AVAILABLE_AUDIO_TRACKS << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_AVAILABLE_AUDIO_TRACKS, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_AUDIO_TRACK, [this](const std::string &request, std::string &response)
+                             { handleSetAudioTrack(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_AUDIO_TRACK << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_AUDIO_TRACK, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_AUDIO_TRACK, [this](const std::string &request, std::string &response)
+                             { handleGetAudioTrack(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_AUDIO_TRACK << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_AUDIO_TRACK, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_AUDIO_TRACK_INFO, [this](const std::string &request, std::string &response)
+                             { handleGetAudioTrackInfo(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_AUDIO_TRACK_INFO << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_AUDIO_TRACK_INFO, " method status: ", (status ? "Success" : "Failure"));
+ 
+         // Subtitles
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_SUBTITLE_MUTE, [this](const std::string &request, std::string &response)
+                             { handleSetSubtitleMute(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_SUBTITLE_MUTE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_SUBTITLE_MUTE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_AVAILABLE_TEXT_TRACKS, [this](const std::string &request, std::string &response)
+                             { handleGetAvailableTextTracks(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_AVAILABLE_TEXT_TRACKS << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_AVAILABLE_TEXT_TRACKS, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_TEXT_TRACK, [this](const std::string &request, std::string &response)
+                             { handleSetTextTrack(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_TEXT_TRACK << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_TEXT_TRACK, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_TEXT_TRACK, [this](const std::string &request, std::string &response)
+                             { handleGetTextTrack(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_TEXT_TRACK << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_TEXT_TRACK, " method status: ", (status ? "Success" : "Failure"));
+ 
+         // Bitrate / ABR
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_VIDEO_BITRATE, [this](const std::string &request, std::string &response)
+                             { handleGetVideoBitrate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_VIDEO_BITRATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_VIDEO_BITRATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_VIDEO_BITRATE, [this](const std::string &request, std::string &response)
+                             { handleSetVideoBitrate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_VIDEO_BITRATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_VIDEO_BITRATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_VIDEO_BITRATES, [this](const std::string &request, std::string &response)
+                             { handleGetVideoBitrates(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_VIDEO_BITRATES << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_VIDEO_BITRATES, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_INITIAL_BITRATE, [this](const std::string &request, std::string &response)
+                             { handleSetInitialBitrate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_INITIAL_BITRATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_INITIAL_BITRATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_INITIAL_BITRATE, [this](const std::string &request, std::string &response)
+                             { handleGetInitialBitrate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_INITIAL_BITRATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_INITIAL_BITRATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_MINIMUM_BITRATE, [this](const std::string &request, std::string &response)
+                             { handleSetMinimumBitrate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_MINIMUM_BITRATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_MINIMUM_BITRATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_MINIMUM_BITRATE, [this](const std::string &request, std::string &response)
+                             { handleGetMinimumBitrate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_MINIMUM_BITRATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_MINIMUM_BITRATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_MAXIMUM_BITRATE, [this](const std::string &request, std::string &response)
+                             { handleSetMaximumBitrate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_MAXIMUM_BITRATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_MAXIMUM_BITRATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_MAXIMUM_BITRATE, [this](const std::string &request, std::string &response)
+                             { handleGetMaximumBitrate(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_MAXIMUM_BITRATE << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_MAXIMUM_BITRATE, " method status: ", (status ? "Success" : "Failure"));
+ 
+         // DRM
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_LICENSE_SERVER_URL, [this](const std::string &request, std::string &response)
+                             { handleSetLicenseServerURL(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_LICENSE_SERVER_URL << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_LICENSE_SERVER_URL, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_DRM, [this](const std::string &request, std::string &response)
+                             { handleGetDRM(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_DRM << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_DRM, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_PREFERRED_DRM, [this](const std::string &request, std::string &response)
+                             { handleSetPreferredDRM(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_PREFERRED_DRM << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_PREFERRED_DRM, " method status: ", (status ? "Success" : "Failure"));
+ 
+         // Configuration
+         status = bindMethod(IPAWSMethods::IPA_METHOD_CONFIGURE_SESSION, [this](const std::string &request, std::string &response)
+                             { handleConfigureSession(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_CONFIGURE_SESSION << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_CONFIGURE_SESSION, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_AAMP_CONFIG, [this](const std::string &request, std::string &response)
+                             { handleGetAAMPConfig(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_AAMP_CONFIG << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_AAMP_CONFIG, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_APP_NAME, [this](const std::string &request, std::string &response)
+                             { handleSetAppName(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_APP_NAME << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_APP_NAME, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_SET_PREFERRED_LANGUAGES, [this](const std::string &request, std::string &response)
+                             { handleSetPreferredLanguages(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_SET_PREFERRED_LANGUAGES << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_SET_PREFERRED_LANGUAGES, " method status: ", (status ? "Success" : "Failure"));
+ 
+         status = bindMethod(IPAWSMethods::IPA_METHOD_GET_PREFERRED_LANGUAGES, [this](const std::string &request, std::string &response)
+                             { handleGetPreferredLanguages(request, response); });
+-        std::cout << "Binding " << IPAWSMethods::IPA_METHOD_GET_PREFERRED_LANGUAGES << " method status: " << (status ? "Success" : "Failure") << std::endl;
++        LOG(LogLevel::TRACE, "Binding ", IPAWSMethods::IPA_METHOD_GET_PREFERRED_LANGUAGES, " method status: ", (status ? "Success" : "Failure"));
+     }
+ 
+     void IPAWSConnector::handleOpenSession(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received openSession request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received openSession request: ", request);
+         // Check whether the play instance is already created or not, if not create a new instance of the player
+         if (!m_playerInstance)
+         {
+             m_playerInstance = IPALauncherPlayer::getInstance();
++            if (m_playerInstance)
++            {
++                LOG(LogLevel::INFO, "Attaching AAMP event callback to RPC server.");
++                m_playerInstance->setEventCallback(
++                    [this](const std::string &eventName, const Json::Value &params)
++                    {
++                        if (m_wsRpcServer)
++                        {
++                            Json::Value eventParams = params;
++                            eventParams["sessionId"] = m_activeSessionId;
++                            LOG(LogLevel::INFO, "Emitting RPC event: ", eventName);
++                            //This needs to be done on an event thread?
++                            m_wsRpcServer->onEvent(eventName, eventParams);
++                        }
++                        else
++                        {
++                            LOG(LogLevel::ERROR, "RPC server not available, dropping event: ", eventName);
++                        }
++                    });
++            }
+         }
+         // If there is an active sesion, we won't allow opening a new session until the current session is closed.
+         if (!m_activeSessionId.empty())
+@@ -303,7 +342,7 @@ namespace ipalauncher
+                 response = "{\"status\": false, \"message\": \"Invalid or missing parameter 'instanceId'.\"}";
+                 return;
+             }
+-            
++
+             if (!requestJson.isMember("displayId") || !requestJson["displayId"].isString())
+             {
+                 response = "{\"status\": false, \"message\": \"Invalid or missing parameter 'displayId'.\"}";
+@@ -327,7 +366,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleStop(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received stop request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received stop request: ", request);
+         if (m_playerInstance && !m_activeSessionId.empty())
+         {
+             m_playerInstance->stop();
+@@ -340,7 +379,7 @@ namespace ipalauncher
+     }
+     void IPAWSConnector::handleGetSessionInfo(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getSessionInfo request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getSessionInfo request: ", request);
+         if (m_activeSessionId.empty())
+         {
+             response = "{\"status\": false, \"message\": \"No active session found.\"}";
+@@ -350,13 +389,13 @@ namespace ipalauncher
+     }
+     void IPAWSConnector::handleSetupSession(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setupSession request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setupSession request: ", request);
+         // For the time being , we need only only parameter, the wayland display id .
+         response = "{\"status\": true, \"message\": \"Session setup successfully.\"}";
+     }
+     void IPAWSConnector::handlePlay(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received play request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received play request: ", request);
+ 
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+@@ -397,7 +436,7 @@ namespace ipalauncher
+     }
+     void IPAWSConnector::handleCloseSession(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received closeSession request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received closeSession request: ", request);
+         if (m_playerInstance && !m_activeSessionId.empty())
+         {
+             Json::Value requestJson;
+@@ -430,7 +469,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSeek(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received seek request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received seek request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -459,7 +498,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSeekToLive(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received seekToLive request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received seekToLive request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -482,7 +521,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetRate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setRate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setRate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -511,7 +550,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetPlaybackSpeed(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setPlaybackSpeed request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setPlaybackSpeed request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -539,7 +578,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handlePauseAt(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received pauseAt request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received pauseAt request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -567,7 +606,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetRateAndSeek(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setRateAndSeek request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setRateAndSeek request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -597,7 +636,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetState(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getState request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getState request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"state\": \"idle\"}";
+@@ -620,7 +659,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetPlaybackPosition(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getPlaybackPosition request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getPlaybackPosition request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"position\": 0.0}";
+@@ -643,7 +682,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetPlaybackDuration(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getPlaybackDuration request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getPlaybackDuration request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"duration\": -1.0}";
+@@ -666,7 +705,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetPlaybackRate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getPlaybackRate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getPlaybackRate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"rate\": 0}";
+@@ -691,7 +730,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleIsLive(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received isLive request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received isLive request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"isLive\": false}";
+@@ -710,7 +749,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetVideoMute(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setVideoMute request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setVideoMute request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -733,7 +772,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetVideoMute(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getVideoMute request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getVideoMute request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"muted\": false}";
+@@ -752,7 +791,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetAudioVolume(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setAudioVolume request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setAudioVolume request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -775,7 +814,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetAudioVolume(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getAudioVolume request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getAudioVolume request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"volume\": 0}";
+@@ -793,7 +832,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetAudioLanguage(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getAudioLanguage request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getAudioLanguage request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"language\": \"\"}";
+@@ -811,7 +850,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetAvailableAudioTracks(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getAvailableAudioTracks request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getAvailableAudioTracks request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"tracks\": []}";
+@@ -830,7 +869,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetAudioTrack(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setAudioTrack request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setAudioTrack request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -853,7 +892,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetAudioTrack(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getAudioTrack request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getAudioTrack request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"trackId\": -1}";
+@@ -871,7 +910,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetAudioTrackInfo(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getAudioTrackInfo request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getAudioTrackInfo request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"trackInfo\": {}}";
+@@ -891,7 +930,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetSubtitleMute(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setSubtitleMute request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setSubtitleMute request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -914,7 +953,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetAvailableTextTracks(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getAvailableTextTracks request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getAvailableTextTracks request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"tracks\": []}";
+@@ -933,7 +972,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetTextTrack(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setTextTrack request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setTextTrack request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -956,7 +995,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetTextTrack(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getTextTrack request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getTextTrack request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"trackId\": -1}";
+@@ -976,7 +1015,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetVideoBitrate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getVideoBitrate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getVideoBitrate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"bitrate\": 0}";
+@@ -994,7 +1033,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetVideoBitrate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setVideoBitrate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setVideoBitrate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -1017,7 +1056,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetVideoBitrates(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getVideoBitrates request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getVideoBitrates request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"bitrates\": []}";
+@@ -1033,7 +1072,8 @@ namespace ipalauncher
+         std::string arr = "[";
+         for (size_t i = 0; i < bitrates.size(); i++)
+         {
+-            if (i > 0) arr += ",";
++            if (i > 0)
++                arr += ",";
+             arr += std::to_string(bitrates[i]);
+         }
+         arr += "]";
+@@ -1042,7 +1082,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetInitialBitrate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setInitialBitrate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setInitialBitrate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -1065,7 +1105,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetInitialBitrate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getInitialBitrate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getInitialBitrate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"bitrate\": 0}";
+@@ -1083,7 +1123,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetMinimumBitrate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setMinimumBitrate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setMinimumBitrate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -1106,7 +1146,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetMinimumBitrate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getMinimumBitrate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getMinimumBitrate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"bitrate\": 0}";
+@@ -1124,7 +1164,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetMaximumBitrate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setMaximumBitrate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setMaximumBitrate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -1147,7 +1187,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetMaximumBitrate(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getMaximumBitrate request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getMaximumBitrate request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"bitrate\": 0}";
+@@ -1167,7 +1207,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetLicenseServerURL(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setLicenseServerURL request" << std::endl;
++        LOG(LogLevel::INFO, "Received setLicenseServerURL request");
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -1190,7 +1230,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetDRM(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getDRM request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getDRM request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"drm\": \"none\"}";
+@@ -1208,7 +1248,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetPreferredDRM(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setPreferredDRM request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setPreferredDRM request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -1233,7 +1273,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleConfigureSession(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received configureSession request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received configureSession request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"sessionId\": \"\", \"success\": false}";
+@@ -1267,7 +1307,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleGetAAMPConfig(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getAAMPConfig request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getAAMPConfig request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"config\": {}}";
+@@ -1285,7 +1325,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetAppName(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setAppName request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setAppName request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -1308,7 +1348,7 @@ namespace ipalauncher
+ 
+     void IPAWSConnector::handleSetPreferredLanguages(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received setPreferredLanguages request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received setPreferredLanguages request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"success\": false}";
+@@ -1321,17 +1361,17 @@ namespace ipalauncher
+             return;
+         }
+         std::string languageList = (requestJson.isMember("languageList") && requestJson["languageList"].isString()) ? requestJson["languageList"].asString() : "";
+-        std::string rendition    = (requestJson.isMember("rendition")    && requestJson["rendition"].isString())    ? requestJson["rendition"].asString()    : "";
+-        std::string type         = (requestJson.isMember("type")         && requestJson["type"].isString())         ? requestJson["type"].asString()         : "";
+-        std::string codecList    = (requestJson.isMember("codecList")    && requestJson["codecList"].isString())    ? requestJson["codecList"].asString()    : "";
+-        std::string labelList    = (requestJson.isMember("labelList")    && requestJson["labelList"].isString())    ? requestJson["labelList"].asString()    : "";
++        std::string rendition = (requestJson.isMember("rendition") && requestJson["rendition"].isString()) ? requestJson["rendition"].asString() : "";
++        std::string type = (requestJson.isMember("type") && requestJson["type"].isString()) ? requestJson["type"].asString() : "";
++        std::string codecList = (requestJson.isMember("codecList") && requestJson["codecList"].isString()) ? requestJson["codecList"].asString() : "";
++        std::string labelList = (requestJson.isMember("labelList") && requestJson["labelList"].isString()) ? requestJson["labelList"].asString() : "";
+         bool ok = m_playerInstance->setPreferredLanguages(languageList, rendition, type, codecList, labelList);
+         response = ok ? "{\"success\": true}" : "{\"success\": false}";
+     }
+ 
+     void IPAWSConnector::handleGetPreferredLanguages(const std::string &request, std::string &response)
+     {
+-        std::cout << "Received getPreferredLanguages request: " << request << std::endl;
++        LOG(LogLevel::INFO, "Received getPreferredLanguages request: ", request);
+         if (!m_playerInstance || m_activeSessionId.empty())
+         {
+             response = "{\"languageList\": \"\"}";
+@@ -1351,11 +1391,11 @@ namespace ipalauncher
+                                            Json::Value &response,
+                                            std::function<void(const std::string &, std::string &)> method)
+     {
+-        std::cout << "Received request: " << request.toStyledString() << std::endl;
++        LOG(LogLevel::INFO, "Received request: ", request.toStyledString());
+         std::string responseStr;
+         method(request.toStyledString(), responseStr);
+ 
+-        std::cout << "Sending response: " << responseStr << std::endl;
++        LOG(LogLevel::INFO, "Sending response: ", responseStr);
+         convertRawStringToJson(responseStr, response);
+     }
+ 
+@@ -1368,7 +1408,7 @@ namespace ipalauncher
+         bool parsingSuccessful = reader->parse(rawString.c_str(), rawString.c_str() + rawString.size(), &jsonValue, &errors);
+         if (!parsingSuccessful)
+         {
+-            std::cerr << "Failed to parse JSON: " << errors << std::endl;
++            LOG(LogLevel::ERROR, "Failed to parse JSON: ", errors);
+             return false;
+         }
+         return true;
+diff --git a/IntegratedPlayer/source/IPAWSConnector.h b/IntegratedPlayer/source/IPAWSConnector.h
+index b74cc82..9d8a727 100644
+--- a/IntegratedPlayer/source/IPAWSConnector.h
++++ b/IntegratedPlayer/source/IPAWSConnector.h
+@@ -26,17 +26,17 @@
+ #include "rpcserver/IAbstractRpcServer.h"
+ #include "rpcserver/WsRpcServerBuilder.h"
+ #include "Player.h"
+-
++#include "LifecycleConnector.h"
+ using namespace rpcserver;
+ 
+ namespace ipalauncher
+ {
+ 
+-    class IPAWSConnector
++    class IPAWSConnector : public LifecycleConnector
+     {
+     public:
+-        IPAWSConnector(uint16_t port)
+-            : m_port(port), m_playerInstance(nullptr)
++        IPAWSConnector()
++            : m_port(0), m_playerInstance(nullptr)
+         {
+         }
+         // Initialize the RPC server and start listening for incoming connections
+diff --git a/IntegratedPlayer/source/LifecycleConnector.cpp b/IntegratedPlayer/source/LifecycleConnector.cpp
+new file mode 100644
+index 0000000..c9ea487
+--- /dev/null
++++ b/IntegratedPlayer/source/LifecycleConnector.cpp
+@@ -0,0 +1,107 @@
++#include "LifecycleConnector.h"
++#include "Logger.h"
++#include <iostream>
++#include <firebolt/firebolt.h>
++
++using ipalauncher::LOG;
++using ipalauncher::LogLevel;
++
++namespace ipalauncher
++{
++	bool LifecycleConnector::connectToFirebolt()
++	{
++		LOG(LogLevel::TRACE, "Connecting to Firebolt endpoint: ", m_endpoint);
++
++		if (isFireboltConnected())
++		{
++			LOG(LogLevel::INFO, "Already connected to Firebolt.");
++			return true;
++		}
++
++		Firebolt::Config config;
++		config.wsUrl = m_endpoint;
++		config.waitTime_ms = 1000;
++		config.log.level = Firebolt::LogLevel::Debug;
++
++		auto error = Firebolt::IFireboltAccessor::Instance().Connect(config, [this](const bool connected, const Firebolt::Error error)
++																	 {
++			if (connected)
++			{
++				LOG(LogLevel::INFO, "Successfully connected to Firebolt.");
++				setFireboltConnected(true);
++			}
++			else
++			{
++				LOG(LogLevel::ERROR, "Disconnected/(Failed to connect) to Firebolt. Error: ", static_cast<int>(error));
++				setFireboltConnected(false);
++			} });
++
++		if (error != Firebolt::Error::None)
++		{
++			LOG(LogLevel::ERROR, "Failed to initiate connection to Firebolt. Error: ", static_cast<int>(error));
++			setFireboltConnected(false);
++			return false;
++		}
++		LOG(LogLevel::TRACE, "Successfully initiated connection to Firebolt endpoint: ", m_endpoint);
++		return true; // Return true if the connection is successful, false otherwise
++	}
++
++	bool LifecycleConnector::disconnectFirebolt()
++	{
++		LOG(LogLevel::TRACE, "Disconnecting from Firebolt.");
++		auto error = Firebolt::IFireboltAccessor::Instance().Disconnect();
++		if (error != Firebolt::Error::None)
++		{
++			LOG(LogLevel::ERROR, "Failed to disconnect from Firebolt. Error: ", static_cast<int>(error));
++			return false;
++		}
++		setFireboltConnected(false);
++		LOG(LogLevel::INFO, "Successfully disconnected from Firebolt.");
++		return true;
++	}
++	bool LifecycleConnector::isFireboltConnected()
++	{
++		std::lock_guard<std::mutex> lock(m_connectionMutex);
++		return m_fbConnected;
++	}
++
++	void LifecycleConnector::setFireboltConnected(bool connected)
++	{
++		std::lock_guard<std::mutex> lock(m_connectionMutex);
++		m_fbConnected = connected;
++		m_connectionCV.notify_all();
++	}
++	bool LifecycleConnector::waitForFireboltConnection(int timeout_ms)
++	{
++		std::unique_lock<std::mutex> lock(m_connectionMutex);
++		return m_connectionCV.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this]
++									   { return m_fbConnected; });
++	}
++	bool LifecycleConnector::registerForLifecycleEvents()
++	{
++		if (!isFireboltConnected())
++		{
++			LOG(LogLevel::ERROR, "Cannot register for lifecycle events. Not connected to Firebolt.");
++			return false;
++		}
++
++		auto result = Firebolt::IFireboltAccessor::Instance().LifecycleInterface().subscribeOnStateChanged(
++			[this](const std::vector<Firebolt::Lifecycle::StateChange> &stateChanges)
++			{
++				for (const auto &stateChange : stateChanges)
++				{
++					LOG(LogLevel::INFO, "Lifecycle state changed from ", static_cast<int>(stateChange.oldState), " to ", static_cast<int>(stateChange.newState));
++				}
++			});
++
++		if (!result)
++		{
++			LOG(LogLevel::ERROR, "Failed to register for lifecycle events. Error: ", static_cast<int>(result.error()));
++			return false;
++		}
++
++		LOG(LogLevel::INFO, "Successfully registered for lifecycle events.");
++		return true;
++	}
++
++} // namespace ipalauncher
+\ No newline at end of file
+diff --git a/IntegratedPlayer/source/LifecycleConnector.h b/IntegratedPlayer/source/LifecycleConnector.h
+new file mode 100644
+index 0000000..89d5950
+--- /dev/null
++++ b/IntegratedPlayer/source/LifecycleConnector.h
+@@ -0,0 +1,33 @@
++#ifndef LIFECYCLE_CONNECTOR_H
++#define LIFECYCLE_CONNECTOR_H
++#include <iostream>
++#include <mutex>
++#include <condition_variable>
++
++namespace ipalauncher
++{
++
++    class LifecycleConnector
++    {
++    public:
++        LifecycleConnector() : m_fbConnected(false) {
++            const char *endpoint = std::getenv("FIREBOLT_ENDPOINT");
++            m_endpoint = endpoint ? endpoint : "";
++        }
++
++        bool connectToFirebolt();
++        bool disconnectFirebolt();
++        bool isFireboltConnected();
++        bool waitForFireboltConnection(int timeout_ms);
++        bool registerForLifecycleEvents();
++
++    private:
++        std::string m_endpoint;                    // Firebolt endpoint
++        bool m_fbConnected;                     // Flag to indicate if connected to Firebolt
++        std::mutex m_connectionMutex;           // Mutex for synchronizing connection process
++        std::condition_variable m_connectionCV; // Condition variable for connection process
++        void setFireboltConnected(bool connected);
++    };
++
++} // namespace ipalauncher
++#endif // LIFECYCLE_CONNECTOR_H
+diff --git a/IntegratedPlayer/source/Logger.h b/IntegratedPlayer/source/Logger.h
+new file mode 100644
+index 0000000..72364b3
+--- /dev/null
++++ b/IntegratedPlayer/source/Logger.h
+@@ -0,0 +1,76 @@
++/*
++ * If not stated otherwise in this file or this component's LICENSE file the
++ * following copyright and licenses apply:
++ *
++ * Copyright 2026 RDK Management
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef _IPLAUNCHER_LOGGER_H
++#define _IPLAUNCHER_LOGGER_H
++#include <iostream>
++#include <string>
++
++namespace ipalauncher
++{
++    enum class LogLevel
++    {
++        INFO,
++        ERROR,
++        DEBUG,
++        TRACE
++    };
++
++    //Define the current log level. This can be modified to change the logging verbosity.
++    static LogLevel CURRENT_LOG_LEVEL = LogLevel::TRACE;
++    //Provide a method to set the log level at runtime if needed. This can be useful for changing the verbosity without recompiling.
++    inline void setLogLevel(LogLevel level)
++    {
++        CURRENT_LOG_LEVEL = level;
++    }
++
++
++    //Method to convert LogLevel enum to string for better readability in logs.
++    inline std::string logLevelToString(LogLevel level)
++    {
++        switch (level)
++        {
++        case LogLevel::INFO:
++            return "INFO";
++        case LogLevel::ERROR:
++            return "ERROR";
++        case LogLevel::DEBUG:
++            return "DEBUG";
++        case LogLevel::TRACE:
++            return "TRACE";
++        default:
++            return "UNKNOWN";
++        }
++    }
++
++    template <typename T, typename... Args>
++    inline void LOG(LogLevel level, const T &firstArg, const Args &...args)
++    {
++        if(level <= CURRENT_LOG_LEVEL)
++        {
++            std::cout << "[IPALauncher][" << logLevelToString(level) << "] " << firstArg;
++            using expander = int[];
++            (void)expander{0, (void(std::cout << args), 0)...};
++            std::cout << std::endl;
++        }
++    }
++ 
++
++} // namespace ipalauncher
++#endif // _IPLAUNCHER_LOGGER_H
+\ No newline at end of file
+diff --git a/IntegratedPlayer/source/Player.cpp b/IntegratedPlayer/source/Player.cpp
+index 8b3338f..a1131f2 100644
+--- a/IntegratedPlayer/source/Player.cpp
++++ b/IntegratedPlayer/source/Player.cpp
+@@ -22,10 +22,13 @@
+ // Header for gst_init
+ #include <gst/gst.h>
+ #include <iostream>
++#include <sstream>
+ #include <vector>
+ #include "AampLogManager.h"
+ #include "IPAUtils.h"
+-
++#include "Logger.h"
++// AAMP event types
++#include <AampEvent.h>
+ namespace ipalauncher
+ {
+     IPALauncherPlayer *IPALauncherPlayer::m_instance = nullptr;
+@@ -35,16 +38,16 @@ namespace ipalauncher
+         if (!m_instance)
+         {
+             m_instance = new IPALauncherPlayer();
+-            std::cout << "IPALauncherPlayer instance created." << std::endl;
++            LOG(LogLevel::INFO, "IPALauncherPlayer instance created.");
+             if (m_instance->initializePlayer())
+             {
+-                std::cout << "Player initialized successfully." << std::endl;
++                LOG(LogLevel::INFO, "Player initialized successfully.");
+                 // Initialization successful
+             }
+             else
+             {
+                 // Initialization failed, handle error
+-                std::cerr << "Failed to initialize Player." << std::endl;
++                LOG(LogLevel::ERROR, "Failed to initialize Player.");
+                 delete m_instance;
+                 m_instance = nullptr;
+             }
+@@ -88,7 +91,7 @@ namespace ipalauncher
+         // Thread implementation for AAMP GStreamer player stream
+         m_eventLoop = g_main_loop_new(nullptr, FALSE);
+         g_main_loop_run(m_eventLoop); // Blocking call to run the main loop
+-        std::cout << "Exiting AAMP GStreamer player stream thread." << std::endl;
++        LOG(LogLevel::INFO, "Exiting AAMP GStreamer player stream thread.");
+         g_main_loop_unref(m_eventLoop);
+         m_eventLoop = nullptr;
+         return nullptr;
+@@ -178,15 +181,15 @@ namespace ipalauncher
+         // locator,autoplay,contentType,firstAttempt,finalAttempt,traceUUID,audioDecoderStreamSync
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+         if (url.empty())
+         {
+-            std::cerr << "Invalid URL." << std::endl;
++            LOG(LogLevel::ERROR, "Invalid URL.");
+             return false;
+         }
+-        std::cout << "Starting playback for URL: " << url << std::endl;
++        LOG(LogLevel::INFO, "Starting playback for URL: ", url);
+         m_player->Tune(url.c_str(), true, nullptr, true, false, nullptr, true);
+ 
+         return true;
+@@ -196,10 +199,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Stopping playback." << std::endl;
++        LOG(LogLevel::INFO, "Stopping playback.");
+         m_player->Stop();
+         return true;
+     }
+@@ -209,10 +212,10 @@ namespace ipalauncher
+         // Pause implementation
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Pausing playback." << std::endl;
++        LOG(LogLevel::INFO, "Pausing playback.");
+         m_player->PauseAt(0.0);
+         return true;
+     }
+@@ -222,10 +225,10 @@ namespace ipalauncher
+         // Resume implementation
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Resuming playback." << std::endl;
++        LOG(LogLevel::INFO, "Resuming playback.");
+         m_player->SetRate(1);
+         return true;
+     }
+@@ -235,7 +238,7 @@ namespace ipalauncher
+         // Check if paused implementation
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+         return m_player->GetPlaybackRate() == 0.0;
+@@ -245,10 +248,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Seeking to position: " << position << " keepPaused: " << keepPaused << std::endl;
++        LOG(LogLevel::INFO, "Seeking to position: ", position, " keepPaused: ", keepPaused);
+         m_player->Seek(position, keepPaused);
+         return true;
+     }
+@@ -257,10 +260,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Seeking to live edge. keepPaused: " << keepPaused << std::endl;
++        LOG(LogLevel::INFO, "Seeking to live edge. keepPaused: ", keepPaused);
+         m_player->SeekToLive(keepPaused);
+         return true;
+     }
+@@ -269,10 +272,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting playback rate: " << rate << " overshootCorrection: " << overshootCorrection << std::endl;
++        LOG(LogLevel::INFO, "Setting playback rate: ", rate, " overshootCorrection: ", overshootCorrection);
+         m_player->SetRate(rate, overshootCorrection);
+         return true;
+     }
+@@ -281,10 +284,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting playback speed: " << speed << std::endl;
++        LOG(LogLevel::INFO, "Setting playback speed: ", speed);
+         m_player->SetRate(speed);
+         return true;
+     }
+@@ -293,10 +296,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Scheduling pause at position: " << position << std::endl;
++        LOG(LogLevel::INFO, "Scheduling pause at position: ", position);
+         m_player->PauseAt(position);
+         return true;
+     }
+@@ -305,10 +308,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting rate: " << rate << " and seeking to: " << position << std::endl;
++        LOG(LogLevel::INFO, "Setting rate: ", rate, " and seeking to: ", position);
+         m_player->SetRateAndSeek(rate, position);
+         return true;
+     }
+@@ -317,7 +320,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return "idle";
+         }
+         AAMPPlayerState state = m_player->GetState();
+@@ -346,7 +349,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return 0.0;
+         }
+         return m_player->GetPlaybackPosition();
+@@ -356,7 +359,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return -1.0;
+         }
+         return m_player->GetPlaybackDuration();
+@@ -366,7 +369,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return 0;
+         }
+         return m_player->GetPlaybackRate();
+@@ -376,7 +379,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+         return m_player->IsLive();
+@@ -386,10 +389,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting video mute: " << muted << std::endl;
++        LOG(LogLevel::INFO, "Setting video mute: ", muted);
+         m_player->SetVideoMute(muted);
+         return true;
+     }
+@@ -398,7 +401,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+         return m_player->GetVideoMute();
+@@ -408,10 +411,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting audio volume: " << volume << std::endl;
++        LOG(LogLevel::INFO, "Setting audio volume: ", volume);
+         m_player->SetAudioVolume(volume);
+         return true;
+     }
+@@ -420,7 +423,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return 0;
+         }
+         return m_player->GetAudioVolume();
+@@ -430,7 +433,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return "";
+         }
+         return m_player->GetAudioLanguage();
+@@ -440,7 +443,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return "[]";
+         }
+         return m_player->GetAvailableAudioTracks(allTracks);
+@@ -450,10 +453,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting audio track: " << trackId << std::endl;
++        LOG(LogLevel::INFO, "Setting audio track: ", trackId);
+         m_player->SetAudioTrack(trackId);
+         return true;
+     }
+@@ -462,7 +465,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return -1;
+         }
+         return m_player->GetAudioTrack();
+@@ -472,7 +475,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return "{}";
+         }
+         return m_player->GetAudioTrackInfo();
+@@ -482,10 +485,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting subtitle mute: " << muted << std::endl;
++        LOG(LogLevel::INFO, "Setting subtitle mute: ", muted);
+         m_player->SetSubtitleMute(muted);
+         return true;
+     }
+@@ -494,7 +497,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return "[]";
+         }
+         return m_player->GetAvailableTextTracks(allTracks);
+@@ -504,10 +507,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting text track: " << trackId << std::endl;
++        LOG(LogLevel::INFO, "Setting text track: ", trackId);
+         m_player->SetTextTrack(trackId);
+         return true;
+     }
+@@ -516,7 +519,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return -1;
+         }
+         return m_player->GetTextTrack();
+@@ -526,7 +529,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return 0;
+         }
+         return static_cast<int64_t>(m_player->GetVideoBitrate());
+@@ -536,10 +539,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting video bitrate: " << bitrate << std::endl;
++        LOG(LogLevel::INFO, "Setting video bitrate: ", bitrate);
+         m_player->SetVideoBitrate(static_cast<BitsPerSecond>(bitrate));
+         return true;
+     }
+@@ -548,7 +551,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return {};
+         }
+         std::vector<BitsPerSecond> aampBitrates = m_player->GetVideoBitrates();
+@@ -560,10 +563,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting initial bitrate: " << bitrate << std::endl;
++        LOG(LogLevel::INFO, "Setting initial bitrate: ", bitrate);
+         m_player->SetInitialBitrate(static_cast<BitsPerSecond>(bitrate));
+         return true;
+     }
+@@ -572,7 +575,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return 0;
+         }
+         return static_cast<int64_t>(m_player->GetInitialBitrate());
+@@ -582,10 +585,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting minimum bitrate: " << bitrate << std::endl;
++        LOG(LogLevel::INFO, "Setting minimum bitrate: ", bitrate);
+         m_player->SetMinimumBitrate(static_cast<BitsPerSecond>(bitrate));
+         return true;
+     }
+@@ -594,7 +597,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return 0;
+         }
+         return static_cast<int64_t>(m_player->GetMinimumBitrate());
+@@ -604,10 +607,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting maximum bitrate: " << bitrate << std::endl;
++        LOG(LogLevel::INFO, "Setting maximum bitrate: ", bitrate);
+         m_player->SetMaximumBitrate(static_cast<BitsPerSecond>(bitrate));
+         return true;
+     }
+@@ -616,7 +619,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return 0;
+         }
+         return static_cast<int64_t>(m_player->GetMaximumBitrate());
+@@ -626,10 +629,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting license server URL" << std::endl;
++        LOG(LogLevel::INFO, "Setting license server URL");
+         m_player->SetLicenseServerURL(url.c_str());
+         return true;
+     }
+@@ -638,7 +641,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return "none";
+         }
+         return m_player->GetDRM();
+@@ -648,7 +651,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+         DRMSystems drm = eDRM_MAX_DRMSystems;
+@@ -660,10 +663,10 @@ namespace ipalauncher
+             drm = eDRM_ClearKey;
+         else
+         {
+-            std::cerr << "Unknown DRM type: " << drmType << std::endl;
++            LOG(LogLevel::ERROR, "Unknown DRM type: ", drmType);
+             return false;
+         }
+-        std::cout << "Setting preferred DRM: " << drmType << std::endl;
++        LOG(LogLevel::INFO, "Setting preferred DRM: ", drmType);
+         m_player->SetPreferredDRM(drm);
+         return true;
+     }
+@@ -672,10 +675,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Applying AAMP config." << std::endl;
++        LOG(LogLevel::INFO, "Applying AAMP config.");
+         return m_player->InitAAMPConfig(configJson.c_str());
+     }
+ 
+@@ -683,7 +686,7 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return "{}";
+         }
+         return m_player->GetAAMPConfig();
+@@ -693,10 +696,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting app name: " << name << std::endl;
++        LOG(LogLevel::INFO, "Setting app name: ", name);
+         m_player->SetAppName(name);
+         return true;
+     }
+@@ -709,10 +712,10 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return false;
+         }
+-        std::cout << "Setting preferred languages: " << languageList << std::endl;
++        LOG(LogLevel::INFO, "Setting preferred languages: ", languageList);
+         m_player->SetPreferredLanguages(
+             languageList.empty() ? nullptr : languageList.c_str(),
+             rendition.empty()    ? nullptr : rendition.c_str(),
+@@ -726,12 +729,25 @@ namespace ipalauncher
+     {
+         if (!m_playerReady || !m_player)
+         {
+-            std::cerr << "Player not initialized." << std::endl;
++            LOG(LogLevel::ERROR, "Player not initialized.");
+             return "";
+         }
+         return m_player->GetPreferredLanguages();
+     }
+ 
++    void IPALauncherPlayer::setEventCallback(IPAPlayerEventListener::EventCallback cb)
++    {
++        if (m_eventListener)
++        {
++            LOG(LogLevel::INFO, "Registering AAMP event callback on IPAPlayerEventListener.");
++            m_eventListener->setEventCallback(std::move(cb));
++        }
++        else
++        {
++            LOG(LogLevel::ERROR, "Cannot set event callback: IPAPlayerEventListener is null.");
++        }
++    }
++
+     // Event listener overrides
+ 
+     const char *IPAPlayerEventListener::stringifyPlayerState(AAMPPlayerState state)
+@@ -740,6 +756,157 @@ namespace ipalauncher
+     }
+     void IPAPlayerEventListener::Event(const AAMPEventPtr &e)
+     {
+-        std::cout << "Received AAMP event: " << mapAAMPEventToString(e->getType()) << std::endl;
++        AAMPEventType type = e->getType();
++        LOG(LogLevel::INFO, "Received AAMP event: ", mapAAMPEventToString(type));
++
++        IPAPlayerEventListener::EventCallback cb;
++        {
++            std::lock_guard<std::mutex> lock(m_eventCallbackMutex);
++            cb = m_eventCallback;
++        }
++        if (!cb)
++        {
++            LOG(LogLevel::TRACE, "No event callback registered, dropping AAMP event: ", mapAAMPEventToString(type));
++            return;
++        }
++
++        std::string eventName;
++        Json::Value params;
++
++        switch (type)
++        {
++        case AAMP_EVENT_TUNED:
++        {
++            eventName = "org.rdk.player.onTuned";
++            LOG(LogLevel::INFO, "AAMP_EVENT_TUNED ");
++            break;
++        }
++        case AAMP_EVENT_TUNE_FAILED:
++        {
++            auto ev = std::dynamic_pointer_cast<MediaErrorEvent>(e);
++            eventName = "org.rdk.player.onTuneFailed";
++            if (ev)
++            {
++                params["description"] = ev->getDescription();
++                params["code"]        = ev->getCode();
++                params["shouldRetry"] = ev->shouldRetry();
++                LOG(LogLevel::ERROR, "AAMP_EVENT_TUNE_FAILED: code=", ev->getCode(), " description=", ev->getDescription());
++            }
++            break;
++        }
++        case AAMP_EVENT_STATE_CHANGED:
++        {
++            auto ev = std::dynamic_pointer_cast<StateChangedEvent>(e);
++            eventName = "org.rdk.player.onStateChanged";
++            if (ev)
++            {
++                const char *stateStr = "idle";
++                switch (ev->getState())
++                {
++                    case eSTATE_IDLE:         stateStr = "idle";         break;
++                    case eSTATE_INITIALIZING: stateStr = "initializing"; break;
++                    case eSTATE_INITIALIZED:  stateStr = "initialized";  break;
++                    case eSTATE_PREPARING:    stateStr = "preparing";    break;
++                    case eSTATE_PREPARED:     stateStr = "prepared";     break;
++                    case eSTATE_BUFFERING:    stateStr = "buffering";    break;
++                    case eSTATE_PAUSED:       stateStr = "paused";       break;
++                    case eSTATE_SEEKING:      stateStr = "seeking";      break;
++                    case eSTATE_PLAYING:      stateStr = "playing";      break;
++                    case eSTATE_STOPPING:     stateStr = "stopping";     break;
++                    case eSTATE_STOPPED:      stateStr = "stopped";      break;
++                    case eSTATE_COMPLETE:     stateStr = "complete";     break;
++                    case eSTATE_ERROR:        stateStr = "error";        break;
++                    case eSTATE_RELEASED:     stateStr = "released";     break;
++                    case eSTATE_BLOCKED:      stateStr = "blocked";      break;
++                    default:                  stateStr = "idle";         break;
++                }
++                params["state"] = stateStr;
++                LOG(LogLevel::INFO, "AAMP_EVENT_STATE_CHANGED: state=", stateStr);
++            }
++            break;
++        }
++        case AAMP_EVENT_PROGRESS:
++        {
++            auto ev = std::dynamic_pointer_cast<ProgressEvent>(e);
++            eventName = "org.rdk.player.onProgress";
++            if (ev)
++            {
++                params["positionMs"]       = ev->getPosition();
++                params["durationMs"]       = ev->getDuration();
++                params["speed"]            = ev->getSpeed();
++                params["startMs"]          = ev->getStart();
++                params["endMs"]            = ev->getEnd();
++                params["videoBufferedMs"]  = ev->getVideoBufferedDuration();
++                params["audioBufferedMs"]  = ev->getAudioBufferedDuration();
++                params["liveLatencyMs"]    = ev->getLiveLatency();
++                params["profileBitrate"]   = static_cast<Json::Int64>(ev->getProfileBandwidth());
++                params["networkBitrate"]   = static_cast<Json::Int64>(ev->getNetworkBandwidth());
++                LOG(LogLevel::TRACE, "AAMP_EVENT_PROGRESS: position=", ev->getPosition(), " duration=", ev->getDuration());
++            }
++            break;
++        }
++        case AAMP_EVENT_EOS:
++        {
++            eventName = "org.rdk.player.onEOS";
++            LOG(LogLevel::INFO, "AAMP_EVENT_EOS: end of stream reached.");
++            break;
++        }
++        case AAMP_EVENT_SPEED_CHANGED:
++        {
++            auto ev = std::dynamic_pointer_cast<SpeedChangedEvent>(e);
++            eventName = "org.rdk.player.onSpeedChanged";
++            if (ev)
++            {
++                params["speed"] = ev->getRate();
++                LOG(LogLevel::INFO, "AAMP_EVENT_SPEED_CHANGED: speed=", ev->getRate());
++            }
++            break;
++        }
++        case AAMP_EVENT_BUFFERING_CHANGED:
++        {
++            auto ev = std::dynamic_pointer_cast<BufferingChangedEvent>(e);
++            eventName = "org.rdk.player.onBufferingChanged";
++            if (ev)
++            {
++                params["buffering"] = ev->buffering();
++                LOG(LogLevel::INFO, "AAMP_EVENT_BUFFERING_CHANGED: buffering=", ev->buffering());
++            }
++            break;
++        }
++        case AAMP_EVENT_SEEKED:
++        {
++            auto ev = std::dynamic_pointer_cast<SeekedEvent>(e);
++            eventName = "org.rdk.player.onSeeked";
++            if (ev)
++            {
++                params["positionMs"] = ev->getPosition();
++                LOG(LogLevel::INFO, "AAMP_EVENT_SEEKED: position=", ev->getPosition());
++            }
++            break;
++        }
++        case AAMP_EVENT_BITRATE_CHANGED:
++        {
++            auto ev = std::dynamic_pointer_cast<BitrateChangeEvent>(e);
++            eventName = "org.rdk.player.onBitrateChanged";
++            if (ev)
++            {
++                params["bitrate"]     = static_cast<Json::Int64>(ev->getBitrate());
++                params["description"] = ev->getDescription();
++                params["width"]       = ev->getWidth();
++                params["height"]      = ev->getHeight();
++                params["frameRate"]   = ev->getFrameRate();
++                params["position"]    = ev->getPosition();
++                LOG(LogLevel::INFO, "AAMP_EVENT_BITRATE_CHANGED: bitrate=", ev->getBitrate(), " ", ev->getWidth(), "x", ev->getHeight());
++            }
++            break;
++        }
++        default:
++            // Unhandled event — no notification sent
++            LOG(LogLevel::TRACE, "Unhandled AAMP event (not forwarded): ", mapAAMPEventToString(type));
++            return;
++        }
++
++        LOG(LogLevel::DEBUG, "Dispatching RPC event: ", eventName);
++        cb(eventName, params);
+     }
+ } // Namespace ipalauncher
+diff --git a/IntegratedPlayer/source/Player.h b/IntegratedPlayer/source/Player.h
+index 71cfa32..1327a9a 100644
+--- a/IntegratedPlayer/source/Player.h
++++ b/IntegratedPlayer/source/Player.h
+@@ -20,8 +20,12 @@
+ #ifndef _IPALAUNCHER_PLAYER_H
+ #define _IPALAUNCHER_PLAYER_H
+ #include <cstdint>
++#include <functional>
++#include <mutex>
++#include <utility>
+ #include <string>
+ #include <vector>
++#include <json/json.h>
+ #include <main_aamp.h>
+ #include <AampEventListener.h>
+ #include <glib.h> // For GMainLoop
+@@ -32,8 +36,19 @@ namespace ipalauncher
+     class IPAPlayerEventListener : public AAMPEventObjectListener
+     {
+     public:
++        using EventCallback = std::function<void(const std::string &, const Json::Value &)>;
++
+         const char *stringifyPlayerState(AAMPPlayerState state);
+         void Event(const AAMPEventPtr &e) override;
++        void setEventCallback(EventCallback cb)
++        {
++            std::lock_guard<std::mutex> lock(m_eventCallbackMutex);
++            m_eventCallback = std::move(cb);
++        }
++
++    private:
++        std::mutex m_eventCallbackMutex;
++        EventCallback m_eventCallback;
+     };
+ 
+     class IPALauncherPlayer
+@@ -106,6 +121,7 @@ namespace ipalauncher
+                                    const std::string &codecList = "",
+                                    const std::string &labelList = "");
+         std::string getPreferredLanguages();
++        void setEventCallback(IPAPlayerEventListener::EventCallback cb);
+ 
+     private:
+         static IPALauncherPlayer *m_instance;
+@@ -125,4 +141,4 @@ namespace ipalauncher
+         gpointer IPAPlayerStreamThread(gpointer arg);
+     }; // class IPALauncherPlayer
+ } // namespace ipalauncher
+-#endif // _IPALAUNCHER_PLAYER_H
+\ No newline at end of file
++#endif // _IPALAUNCHER_PLAYER_H
+diff --git a/IntegratedPlayer/source/main.cpp b/IntegratedPlayer/source/main.cpp
+index e05dbdd..82bf23c 100644
+--- a/IntegratedPlayer/source/main.cpp
++++ b/IntegratedPlayer/source/main.cpp
+@@ -23,6 +23,7 @@
+ #include <mutex>
+ #include <thread>
+ #include <condition_variable>
++#include "Logger.h"
+ 
+ std::mutex m_lock;
+ std::condition_variable m_act_cv;
+@@ -30,7 +31,7 @@ bool m_isActive = true;
+ 
+ void waitForTermSignal()
+ {
+-    std::cout << "Waiting for term signal.. " << std::endl;
++    ipalauncher::LOG(ipalauncher::LogLevel::INFO, "Waiting for term signal.. ");
+     std::thread termThread([&]()
+                            {
+     while (m_isActive)
+@@ -39,13 +40,13 @@ void waitForTermSignal()
+         m_act_cv.wait(ulock);
+     }
+     
+-    std::cout<<"[SmartMonitor::waitForTermSignal] Received term signal." << std::endl; });
++    ipalauncher::LOG(ipalauncher::LogLevel::INFO, "[waitForTermSignal] Received term signal."); });
+     termThread.join();
+ }
+ 
+ void handleTermSignal(int _signal)
+ {
+-    std::cout << "Exiting from app.." << std::endl;
++    ipalauncher::LOG(ipalauncher::LogLevel::INFO, "Exiting from app..");
+ 
+     std::unique_lock<std::mutex> ulock(m_lock);
+     m_isActive = false;
+@@ -64,6 +65,6 @@ int main(int argc, char *argv[])
+ 
+     waitForTermSignal();
+ 
+-    std::cout << "Exiting application." << std::endl;
++    ipalauncher::LOG(ipalauncher::LogLevel::INFO, "Exiting application.");
+     return 0;
+ }

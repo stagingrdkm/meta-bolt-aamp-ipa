@@ -16,7 +16,7 @@ CMF_GITHUB_BRANCH = "branch=${AAMP_BRANCH}"
 
 # original: DEPENDS += "curl libdash libxml2 cjson readline ${@bb.utils.contains('DISTRO_FEATURES', 'build_external_player_interface', 'player-interface', '', d)} ${@bb.utils.contains('DISTRO_FEATURES', 'webkitbrowser-plugin', '${WPEWEBKIT}', '', d)} ${@bb.utils.contains('DISTRO_FEATURES', 'subtec', 'closedcaption-hal-headers virtual/vendor-dvb virtual/vendor-closedcaption-hal', '', d)} ${@bb.utils.contains('DISTRO_FEATURES', 'enable_rialto', 'dobby', '', d)}"
 # replaced with this line, note I had to add gstreamer1.0 gstreamer1.0-plugins-base
-DEPENDS += "curl libdash libxml2 cjson readline gstreamer1.0"
+DEPENDS += "curl libdash libxml2 cjson readline gstreamer1.0 "
 
 # original: RDEPENDS:${PN} += "devicesettings ${@bb.utils.contains('DISTRO_FEATURES', 'build_external_player_interface', 'player-interface', '', d)} ${@bb.utils.contains('DISTRO_FEATURES', 'subtec', 'packagegroup-subttxrend-app', '', d)}"
 # replaced with this line
@@ -131,4 +131,4 @@ do_install:append() {
 
 # removing the whole artifact generation piece. Don't need it for our use case
 # removed it from this file
-RECOMMENDS:${PN} += "ca-certificates shared-mime-info"
+RRECOMMENDS:${PN} += "ca-certificates shared-mime-info"

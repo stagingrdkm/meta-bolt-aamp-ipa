@@ -1,14 +1,18 @@
 {
   "id": "com.rdkcentral.aamp-cli-sh",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "versionName": "develop",
   "name": "aamp-ipa",
-  "packageType": "application",
+  "packageType": "service",
   "entryPoint": "/usr/bin/IPALauncher",
   "dependencies": {
-    "com.rdkcentral.base": "0.2.0"
+    "com.rdkcentral.base": "0.3.0"
   },
   "permissions": [
+    "urn:rdk:permission.internet",
+    "urn:rdk:permission:firebolt",
+    "urn:rdk:permission:thunder",
+    "urn:rdk:permission:rialto"
   ],
   "configuration": {
   }
