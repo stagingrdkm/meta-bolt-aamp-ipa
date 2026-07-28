@@ -1,5 +1,5 @@
 <manifest>
   <remote name="rdkcentral" fetch="https://github.com/rdkcentral/"/>
 
-  <project remote="rdkcentral" name="meta-bolt-distro" upstream="develop" revision="4ec26f92c237b130ab9eafad3017a1a230c2a48e" path="bolt"/>
+  <project remote="rdkcentral" name="meta-bolt-distro" upstream="develop" revision="abd1a15425a21adc2f7a1bd9370d1aa9f8196298" path="bolt"/>
 </manifest>
