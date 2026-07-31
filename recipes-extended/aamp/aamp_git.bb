@@ -4,11 +4,11 @@ SECTION = "console/utils"
 LICENSE = "Apache-2.0"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=97dd37dbf35103376811825b038fc32b"
 
-PV = "3.6.0"
+PV = "3.3.9e"
 PR = "r0"
 
 SRCREV_FORMAT = "aamp"
-SRCREV_aamp ?= "f6208c3886f0b34ecedb14957917490c804d3ef7"
+SRCREV_aamp ?= "6369fdab6e0df6168108ee39c68e63a54b1ce5b4"
 
 # Support to build from a different branch by overriding both AAMP_BRANCH and SRCREV_aamp to specific branch and revision.
 AAMP_BRANCH ?= "develop"
@@ -57,12 +57,12 @@ inherit cmake
 # this CMAKE_EXTERNAL_PLAYER_INTERFACE_DEPENDENCIES basically switches between either building those component source from dedicated repo/recipe or building them from within aamp sources but in both cases they will still be build and bring in big dependency tree
 # At first look that depedency tree could be problematic, need to further analyse
 # Putting this to 0 will choose to build them for aamp sources and drags them in here 
-# https://github.com/rdkcentral/aamp/blob/develop/CMakeLists.txt#L242-L255 
-EXTRA_OECMAKE += " -DCMAKE_EXTERNAL_PLAYER_INTERFACE_DEPENDENCIES=0"
+
+EXTRA_OECMAKE += " -DCMAKE_EXTERNAL_PLAYER_INTERFACE_DEPENDENCIES=0 -DCMAKE_USE_RIALTO=1 -DCMAKE_USE_THUNDER_OCDM_API_0_2=1 -DCMAKE_CDM_DRM=1 -DCMAKE_USE_OPENCDM_ADAPTER=1 -DCMAKE_USE_PLAYREADY=1 -DCMAKE_USE_WIDEVINE=1"
 
 NO_RECOMMENDATIONS = "1"
 
-SRC_URI = "git://github.com/rdkcentral/aamp.git;protocol=https;branch=develop;name=aamp"
+SRC_URI = "git://github.com/rdkcentral/aamp.git;protocol=https;nobranch=1;name=aamp"
 #adding text based aamp config file read by aamp at launchtime to be installed in /opt/aamp.cfg
 SRC_URI += "file://aamp.cfg"
 #SRC_URI += "file://aamp-cli-bolt.sh"
